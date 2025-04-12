@@ -32,7 +32,7 @@ from ..utils.model import (
 from ..utils.services import DBService, LocationInfo
 
 require('nonebot_plugin_alconna')
-from nonebot_plugin_alconna import (  # noqa: E402
+from nonebot_plugin_alconna import (
     Alconna,
     AlconnaMatcher,
     Args,
@@ -46,21 +46,107 @@ from nonebot_plugin_alconna import (  # noqa: E402
 )
 
 require('nonebot_plugin_apscheduler')
-from nonebot_plugin_apscheduler import scheduler  # noqa: E402
+from nonebot_plugin_apscheduler import scheduler
 
 
-@DRIVER.on_startup
-def _() -> None:
-    ASSETS_DIR.mkdir(exist_ok=True)
+@scheduler.scheduled_job(
+    'cron',
+    hour=plugin_config.schedule_hour,
+    minute=plugin_config.schedule_minute,
+    id='send_weather_info',
+)
+async def send_weather_info() -> None:
+    dbs: DBService = DBService.get_instance()
+    await dbs.init()
+
+    group_ids: list[int] = await dbs.get_subscribed_groups()
+
     font_dir: Path = ASSETS_DIR / 'fonts'
-    font_dir.mkdir(exist_ok=True)
+    custom_zh_font_path: Path = font_dir / plugin_config.weather_custom_font_zh
+    custom_en_font_path: Path = font_dir / plugin_config.weather_custom_font_en
+
+    # 复用一个 AsyncClient 实例，设置较长超时时间
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        for group_id in group_ids:
+            target: Target = Target(str(group_id))
+            if (
+                plugin_config.weather_custom_font_en != ''
+                and not custom_en_font_path.exists()
+            ) or (
+                plugin_config.weather_custom_font_zh != ''
+                and not custom_zh_font_path.exists()
+            ):
+                await UniMessage().text(
+                    '自定义字体缺失: ' +
+                    (str(custom_en_font_path.absolute()) if not custom_en_font_path.exists() else '') +
+                    (str(custom_zh_font_path.absolute()) if not custom_zh_font_path.exists() else '')
+                ).send(target)
+                continue
+
+            if plugin_config.schedule_switch:
+                logger.info('开始推送天气')
+                locations: list[LocationInfo] = await dbs.get_locations_in_group(group_id)
+                weathers: list[WeatherData] = []
+                modes: list[str] = ['气温', '空气质量']
+
+                for mode in modes:
+                    weathers.clear()
+                    for location in locations:
+                        if mode == '气温':
+                            url = f'{NOW_WEATHER_SEARCH_BASE_URL}location={location.code}&key={plugin_config.qweather_api_key}'
+                        else:
+                            url = f'{AIR_QUALITY_BASE_URL}location={location.code}&key={plugin_config.qweather_api_key}'
+                        response: httpx.Response = await client.get(url)
+                        if response.status_code == 200:
+                            if mode == '气温':
+                                now_weather: NowWeather = NowWeather(**response.json())
+                                weathers.append(
+                                    WeatherData(name=location.name, temp=now_weather.now.temp)
+                                )
+                            elif mode == '空气质量':
+                                air_quality = response.json()['now']
+                                weathers.append(
+                                    WeatherData(
+                                        name=location.name,
+                                        temp=air_quality['aqi'],
+                                    )
+                                )
+                        else:
+                            await UniMessage.text(f'获取{location.name}天气信息失败').send(target)
+
+                    # 对各地气温/空气质量进行排序
+                    if mode == '气温':
+                        weathers.sort(key=lambda x: int(x.temp), reverse=True)
+                    else:
+                        weathers.sort(key=lambda x: int(x.temp), reverse=False)
+
+                    # 绘制排行榜
+                    template_path: str = str(Path(__file__).parent / 'templates')
+                    template_name: str = 'rank_card.html.jinja2'
+
+                    rank_img: bytes = await template_element_to_pic(
+                        template_path,
+                        template_name,
+                        templates={
+                            'datas': weathers,
+                            'mode': mode,
+                            'custom_font_dir': font_dir.as_posix(),
+                            'custom_en': custom_en_font_path.as_posix(),
+                            'custom_zh': custom_zh_font_path.as_posix(),
+                        },
+                        element='.container',
+                        wait=2,
+                        omit_background=True,
+                    )
+
+                    await UniMessage().image(raw=rank_img).send(target)
 
 
 weather_rank_commands: Alconna[Any] = Alconna(
     '天气',
     Subcommand(
         '排行榜',
-        Args['mode', str, Field(completion=lambda: '请输入要生成的排行榜(气温/温差)')],
+        Args['mode', str, Field(completion=lambda: '请输入要生成的排行榜(气温/空气质量)')],
     ),
     Subcommand(
         '添加城市',
@@ -87,123 +173,14 @@ weather_rank: type[AlconnaMatcher] = on_alconna(
     skip_for_unmatch=False,
 )
 
-
 helper: Alconna[Any] = Alconna('天气帮助')
 weather_rank_helper: type[AlconnaMatcher] = on_alconna(
     command=helper, aliases={'weather_rank_helper'}, use_cmd_start=True
 )
 
 
-@scheduler.scheduled_job(
-    'cron',
-    hour=plugin_config.schedule_hour,
-    minute=plugin_config.schedule_minute,
-    id='send_weather_info',
-)
-async def _() -> None:
-    dbs: DBService = DBService.get_instance()
-    await dbs.init()
-
-    group_ids: list[int] = await dbs.get_subscribed_groups()
-
-    font_dir: Path = ASSETS_DIR / 'fonts'
-    custom_zh_font_path: Path = font_dir / plugin_config.weather_custom_font_zh
-    custom_en_font_path: Path = font_dir / plugin_config.weather_custom_font_en
-
-    for id in group_ids:
-        target: Target = Target(str(id))
-        if (
-            plugin_config.weather_custom_font_en != ''
-            and not custom_en_font_path.exists()
-        ) or (
-            plugin_config.weather_custom_font_zh != ''
-            and not custom_zh_font_path.exists()
-        ):
-            await (
-                UniMessage()
-                .text(
-                    '自定义字体缺失: '
-                    + (
-                        str(custom_en_font_path.absolute())
-                        if not custom_en_font_path.exists()
-                        else ''
-                    )
-                    + (
-                        str(custom_zh_font_path.absolute())
-                        if not custom_zh_font_path.exists()
-                        else ''
-                    )
-                )
-                .send(target)
-            )
-            continue
-
-        if plugin_config.schedule_switch:
-            logger.info('开始推送天气')
-            locations: list[LocationInfo] = await dbs.get_locations_in_group(int(id))
-            weathers: list[WeatherData] = []
-            modes: list[str] = ['气温', '温差']
-            for mode in modes:
-                for location in locations:
-                    async with httpx.AsyncClient() as ctx:
-                        response: httpx.Response = await ctx.get(
-                            f'{NOW_WEATHER_SEARCH_BASE_URL}location={location.code}&key={plugin_config.qweather_api_key}'
-                            if mode == '气温'
-                            else f'{DAILY_WEATHER_SEARCH_BASE_URL}location='
-                            + f'{location.code}&key={plugin_config.qweather_api_key}'
-                        )
-                        if response.status_code == 200:
-                            if mode == '气温':
-                                now_weather: NowWeather = NowWeather(**response.json())
-                                weathers.append(
-                                    WeatherData(
-                                        name=location.name, temp=now_weather.now.temp
-                                    )
-                                )
-                            elif mode == '温差':
-                                daily_weather: DailyWeather = DailyWeather(
-                                    **response.json()
-                                )
-                                weathers.append(
-                                    WeatherData(
-                                        name=location.name,
-                                        temp=str(
-                                            int(daily_weather.daily[0].temp_max)
-                                            - int(daily_weather.daily[0].temp_min)
-                                        ),
-                                    )
-                                )
-                        else:
-                            await UniMessage.text(
-                                f'获取{location.name}天气信息失败'
-                            ).send(target)
-                # 对各地气温/温差进行排序
-                weathers.sort(key=lambda x: int(x.temp), reverse=True)
-
-                # 绘制排行榜
-                template_path: str = str(Path(__file__).parent / 'templates')
-                template_name: str = 'rank_card.html.jinja2'
-
-                rank_img: bytes = await template_element_to_pic(
-                    template_path,
-                    template_name,
-                    templates={
-                        'datas': weathers,
-                        'mode': mode,
-                        'custom_font_dir': font_dir.as_posix(),
-                        'custom_en': custom_en_font_path.as_posix(),
-                        'custom_zh': custom_zh_font_path.as_posix(),
-                    },
-                    element='.container',
-                    wait=2,
-                    omit_background=True,
-                )
-
-                await UniMessage().image(raw=rank_img).send(target)
-
-
 @weather_rank_helper.handle()
-async def _() -> None:
+async def handle_helper() -> None:
     with open(Path(__file__).parent / 'help.md', encoding='utf-8') as f:
         md: str = f.read()
     help_img: bytes = await md_to_pic(md=md, width=720)
@@ -212,7 +189,7 @@ async def _() -> None:
 
 
 @weather_rank.handle()
-async def _(event: Event, result: Arparma) -> None:
+async def handle_weather(event: Event, result: Arparma) -> None:
     dbs: DBService = DBService.get_instance()
     await dbs.init()
     id: int = int(UniMessage.get_target(event).id)
@@ -222,10 +199,9 @@ async def _(event: Event, result: Arparma) -> None:
     custom_en_font_path: Path = font_dir / plugin_config.weather_custom_font_en
 
     if '添加城市' in result.subcommands:
-        # 如果匹配至'添加城市'子命令，则通过api获取城市地区码，并写入数据库
         city: str = result.subcommands['添加城市'].args['city']
-        async with httpx.AsyncClient() as ctx:
-            res = await ctx.get(
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            res = await client.get(
                 f'{CITY_SEARCH_BASE_URL}location={city}&key={plugin_config.qweather_api_key}'
             )
             if res.status_code == 200:
@@ -233,18 +209,15 @@ async def _(event: Event, result: Arparma) -> None:
                 if data and len(data) > 0:
                     location_code: str = data[0]['id']
                     location_name: str = data[0]['name']
-                    msg1: str = await dbs.add_location_for_group(
-                        id, location_code, location_name
-                    )
+                    msg1: str = await dbs.add_location_for_group(id, location_code, location_name)
                     await weather_rank.finish(msg1)
             else:
                 await weather_rank.finish('城市名称错误')
 
     if '删除城市' in result.subcommands:
-        # 如果匹配至'删除城市'子命令，则通过api获取城市地区码，从数据库删除
         del_city: str = result.subcommands['删除城市'].args['city']
-        async with httpx.AsyncClient() as ctx:
-            res = await ctx.get(
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            res = await client.get(
                 f'{CITY_SEARCH_BASE_URL}location={del_city}&key={plugin_config.qweather_api_key}'
             )
             if res.status_code == 200:
@@ -259,7 +232,6 @@ async def _(event: Event, result: Arparma) -> None:
                 await weather_rank.finish('城市名称错误')
 
     if '排行榜' in result.subcommands:
-        # 如果匹配至'排行榜'，则通过api获取当日订阅地区的实时/近7日气温(由具体模式决定)
         if (
             plugin_config.weather_custom_font_en != ''
             and not custom_en_font_path.exists()
@@ -268,57 +240,39 @@ async def _(event: Event, result: Arparma) -> None:
             and not custom_zh_font_path.exists()
         ):
             await weather_rank.finish(
-                '自定义字体缺失: '
-                + (
-                    str(custom_en_font_path.absolute())
-                    if not custom_en_font_path.exists()
-                    else ''
-                )
-                + (
-                    str(custom_zh_font_path.absolute())
-                    if not custom_zh_font_path.exists()
-                    else ''
-                )
+                '自定义字体缺失: ' +
+                (str(custom_en_font_path.absolute()) if not custom_en_font_path.exists() else '') +
+                (str(custom_zh_font_path.absolute()) if not custom_zh_font_path.exists() else '')
             )
         mode: str = result.subcommands['排行榜'].args['mode']
-        if mode not in ['气温', '温差']:
+        if mode not in ['气温', '空气质量']:
             await weather_rank.finish('不支持的排行榜')
         locations: list[LocationInfo] = await dbs.get_locations_in_group(id)
         weathers: list[WeatherData] = []
-        for location in locations:
-            async with httpx.AsyncClient() as ctx:
-                response: httpx.Response = await ctx.get(
-                    f'{NOW_WEATHER_SEARCH_BASE_URL}location={location.code}&key={plugin_config.qweather_api_key}'
-                    if mode == '气温'
-                    else f'{DAILY_WEATHER_SEARCH_BASE_URL}location={location.code}'
-                    + f'&key={plugin_config.qweather_api_key}'
-                )
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            for location in locations:
+                if mode == '气温':
+                    url = f'{NOW_WEATHER_SEARCH_BASE_URL}location={location.code}&key={plugin_config.qweather_api_key}'
+                else:
+                    url = f'{AIR_QUALITY_BASE_URL}location={location.code}&key={plugin_config.qweather_api_key}'
+                response: httpx.Response = await client.get(url)
                 if response.status_code == 200:
                     if mode == '气温':
                         now_weather: NowWeather = NowWeather(**response.json())
-                        weathers.append(
-                            WeatherData(name=location.name, temp=now_weather.now.temp)
-                        )
-                    elif mode == '温差':
-                        daily_weather: DailyWeather = DailyWeather(**response.json())
+                        weathers.append(WeatherData(name=location.name, temp=now_weather.now.temp))
+                    elif mode == '空气质量':
+                        air_quality = response.json()['now']
                         weathers.append(
                             WeatherData(
                                 name=location.name,
-                                temp=str(
-                                    int(daily_weather.daily[0].temp_max)
-                                    - int(daily_weather.daily[0].temp_min)
-                                ),
+                                temp=air_quality['aqi'],
                             )
                         )
                 else:
                     await weather_rank.send(f'获取{location.name}天气信息失败')
-        # 对各地气温/温差进行排序
         weathers.sort(key=lambda x: int(x.temp), reverse=True)
-
-        # 绘制排行榜
         template_path: str = str(Path(__file__).parent / 'templates')
         template_name: str = 'rank_card.html.jinja2'
-
         await weather_rank.send('正在生成排行榜……')
         rank_img: bytes = await template_element_to_pic(
             template_path,
@@ -334,16 +288,14 @@ async def _(event: Event, result: Arparma) -> None:
             wait=2,
             omit_background=True,
         )
-
         msg2: UniMessage[Image] = UniMessage().image(raw=rank_img)
         await weather_rank.finish(msg2)
 
     if '气温地图' in result.subcommands:
-        # 如果匹配至'气温地图'，则爬取中国天气网的气温地图并发送
         await weather_rank.send('正在获取气温地图……')
         url = ''
-        async with httpx.AsyncClient() as ctx:
-            res = await ctx.get(TEMPERATURE_MAP_BASE_URL)
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            res = await client.get(TEMPERATURE_MAP_BASE_URL)
             if res.status_code == 200:
                 soup = BeautifulSoup(res.text, 'html.parser')
                 img_element: Tag | None = soup.select_one('.imgblock > img')
@@ -360,7 +312,6 @@ async def _(event: Event, result: Arparma) -> None:
             await weather_rank.finish(msgg)
 
     if '当地天气' in result.subcommands:
-        # 如果匹配至'当地天气'，则获取该地气温并绘制当地天气图
         if (
             plugin_config.weather_custom_font_en != ''
             and not custom_en_font_path.exists()
@@ -369,23 +320,15 @@ async def _(event: Event, result: Arparma) -> None:
             and not custom_zh_font_path.exists()
         ):
             await weather_rank.finish(
-                '自定义字体缺失: '
-                + (
-                    str(custom_en_font_path.absolute())
-                    if not custom_en_font_path.exists()
-                    else ''
-                )
-                + (
-                    str(custom_zh_font_path.absolute())
-                    if not custom_zh_font_path.exists()
-                    else ''
-                )
+                '自定义字体缺失: ' +
+                (str(custom_en_font_path.absolute()) if not custom_en_font_path.exists() else '') +
+                (str(custom_zh_font_path.absolute()) if not custom_zh_font_path.exists() else '')
             )
         query_city: str = result.subcommands['当地天气'].args['city']
-        async with httpx.AsyncClient() as ctx:
+        async with httpx.AsyncClient(timeout=10.0) as client:
             location_c: str = ''
             location_n: str = ''
-            res1: httpx.Response = await ctx.get(
+            res1: httpx.Response = await client.get(
                 f'{CITY_SEARCH_BASE_URL}location={query_city}&key={plugin_config.qweather_api_key}'
             )
             if res1.status_code == 200:
@@ -394,19 +337,19 @@ async def _(event: Event, result: Arparma) -> None:
                     location_c = data[0]['id']
                     location_n = data[0]['name']
             if location_c != '' and location_n != '':
-                res2: httpx.Response = await ctx.get(
+                res2: httpx.Response = await client.get(
                     f'{NOW_WEATHER_SEARCH_BASE_URL}location={location_c}&key={plugin_config.qweather_api_key}'
                 )
                 now_wea: NowWeather = NowWeather(**res2.json())
-                res3: httpx.Response = await ctx.get(
+                res3: httpx.Response = await client.get(
                     f'{DAILY_WEATHER_SEARCH_BASE_URL}location={location_c}&key={plugin_config.qweather_api_key}'
                 )
                 daily_wea: DailyWeather = DailyWeather(**res3.json())
-                res4: httpx.Response = await ctx.get(
+                res4: httpx.Response = await client.get(
                     f'{HOURLY_WEATHER_SEARCH_BASE_URL}location={location_c}&key={plugin_config.qweather_api_key}'
                 )
                 hourly_wea: HourlyWeather = HourlyWeather(**res4.json())
-                res5: httpx.Response = await ctx.get(
+                res5: httpx.Response = await client.get(
                     f'{AIR_QUALITY_BASE_URL}location={location_c}&key={plugin_config.qweather_api_key}'
                 )
                 air_quality = res5.json()['now']
@@ -417,37 +360,27 @@ async def _(event: Event, result: Arparma) -> None:
                 for index, hourly_data in enumerate(hourly_wea.hourly):
                     if index == 6:
                         break
-                    time: int = datetime.fromisoformat(hourly_data.fx_time).hour
+                    time_val: int = datetime.fromisoformat(hourly_data.fx_time).hour
                     future_hourly_weathers.append(
                         FutureHourlyWeatherItem(
-                            time=str(time), icon=hourly_data.icon, temp=hourly_data.temp
+                            time=str(time_val),
+                            icon=hourly_data.icon,
+                            temp=hourly_data.temp
                         )
                     )
 
                 for daily_data in daily_wea.daily:
                     date_obj = datetime.strptime(daily_data.fx_date, '%Y-%m-%d')
                     weekday_index: int = date_obj.weekday()
-                    weekdays: list[str] = [
-                        '周一',
-                        '周二',
-                        '周三',
-                        '周四',
-                        '周五',
-                        '周六',
-                        '周日',
-                    ]
+                    weekdays: list[str] = ['周一','周二','周三','周四','周五','周六','周日']
                     future_daily_weathers.append(
                         FutureDailyWeatherItem(
                             week_day=weekdays[weekday_index],
                             icon=daily_data.icon_day,
                             min_temp=daily_data.temp_min,
                             max_temp=daily_data.temp_max,
-                            left_width=str(
-                                round((int(daily_data.temp_min) + 40) / 85 * 100)
-                            ),
-                            right_width=str(
-                                round((45 - int(daily_data.temp_max)) / 85 * 100)
-                            ),
+                            left_width=str(round((int(daily_data.temp_min) + 40) / 85 * 100)),
+                            right_width=str(round((45 - int(daily_data.temp_max)) / 85 * 100)),
                         )
                     )
 
@@ -463,7 +396,6 @@ async def _(event: Event, result: Arparma) -> None:
                     future_daily_weather=future_daily_weathers,
                 )
 
-                # 绘制天气图
                 template_p: str = str(Path(__file__).parent / 'templates')
                 template_n: str = 'weather_card.html.jinja2'
 
@@ -492,3 +424,4 @@ async def _(event: Event, result: Arparma) -> None:
     if '取消订阅' in result.subcommands:
         _m: str = await dbs.remove_subscribed_group(id)
         await weather_rank.finish(_m)
+
