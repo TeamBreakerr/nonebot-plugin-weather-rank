@@ -35,6 +35,7 @@
             border-radius: 8px;
             background: linear-gradient(to bottom, #ff9e80, #ff5722);
             box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1), 0 6px 20px rgba(0, 0, 0, 0.1);
+            padding: 16px;
         }
 
         .title {
@@ -48,48 +49,96 @@
             font-family: {{ "CustomEN" if custom_en != custom_font_dir else "ComicSannsMonoNF" }}, {{ "CustomZH" if custom_zh != custom_font_dir else "MeiWeiTi" }};
             font-size: 24px;
             font-weight: bold;
+            border-radius: 8px;
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+        }
+
+        .card, .card-1 {
+            width: 400px;
+            height: 60px;
+            margin-bottom: 16px;
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-family: {{ "CustomEN" if custom_en != custom_font_dir else "ComicSannsMonoNF" }}, {{ "CustomZH" if custom_zh != custom_font_dir else "MeiWeiTi" }};
+            font-size: 16px;
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+            transition: transform 0.2s;
+        }
+
+        .card:hover, .card-1:hover {
+            transform: translateY(-2px);
         }
 
         .card {
-            width: 400px;
-            height: 60px;
-            margin-bottom: 16px;
             background-color: #f4511e;
-            border-radius: 8px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-family: {{ "CustomEN" if custom_en != custom_font_dir else "ComicSannsMonoNF" }}, {{ "CustomZH" if custom_zh != custom_font_dir else "MeiWeiTi" }};
-            font-size: 16px;
             color: white;
-            box-shadow: 0 8px 16px rgba(0, 0, 0, 0.1), 0 6px 20px rgba(0, 0, 0, 0.1);
         }
 
         .card-1 {
-            width: 400px;
-            height: 60px;
-            margin-bottom: 16px;
             background-color: #ff7043;
-            border-radius: 8px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-family: {{ "CustomEN" if custom_en != custom_font_dir else "ComicSannsMonoNF" }}, {{ "CustomZH" if custom_zh != custom_font_dir else "MeiWeiTi" }};
-            font-size: 16px;
             color: white;
-            box-shadow: 0 8px 16px rgba(0, 0, 0, 0.1), 0 6px 20px rgba(0, 0, 0, 0.1);
+        }
+
+        .aqi-1, .aqi-2, .aqi-3 {
+            color: black;
+        }
+
+        .aqi-4, .aqi-5, .aqi-6 {
+            color: white;
+        }
+
+        .aqi-1 {
+            background-color: rgb(0, 228, 0);
+        }
+
+        .aqi-2 {
+            background-color: rgb(255, 255, 0);
+        }
+
+        .aqi-3 {
+            background-color: rgb(255, 126, 0);
+        }
+
+        .aqi-4 {
+            background-color: rgb(255, 0, 0);
+        }
+
+        .aqi-5 {
+            background-color: rgb(153, 0, 76);
+        }
+
+        .aqi-6 {
+            background-color: rgb(126, 0, 35);
         }
 
         .material1 {
             color: #ffd700;
+            margin-right: 8px;
         }
 
         .material2 {
             color: #c0c0c0;
+            margin-right: 8px;
         }
 
         .material3 {
             color: #cd7f32;
+            margin-right: 8px;
+        }
+
+        .rank-number {
+            font-weight: bold;
+            margin-right: 8px;
+        }
+
+        .city-name {
+            margin-right: 8px;
+        }
+
+        .value {
+            font-weight: bold;
         }
     </style>
 </head>
@@ -98,16 +147,19 @@
     <div class="container">
         <div class="title">{{ mode }}排行榜</div>
         {% for data in datas %}
-        {% if loop.index <= 3 %} <div class="card">
+        {% if loop.index <= 3 %} <div class="card {% if mode == '空气质量' %}aqi-{{ (data.temp|int / 50)|round(0, 'ceil')|int }}{% endif %}">
             <span class="material-symbols-outlined material{{ loop.index }}">editor_choice</span>
-            <span>{{ loop.index }} {{ data.name }} {{ data.temp }}°C</span>
+            <span class="rank-number">{{ loop.index }}</span>
+            <span class="city-name">{{ data.name }}</span>
+            <span class="value">{{ data.temp }}{% if mode == '空气质量' %} AQI{% else %}°C{% endif %}</span>
     </div>
     {% else %}
-    <div class="card-1">
-        <span>{{ loop.index }} {{ data.name }} {{ data.temp }}°C</span>
+    <div class="card-1 {% if mode == '空气质量' %}aqi-{{ (data.temp|int / 50)|round(0, 'ceil')|int }}{% endif %}">
+        <span class="rank-number">{{ loop.index }}</span>
+        <span class="city-name">{{ data.name }}</span>
+        <span class="value">{{ data.temp }}{% if mode == '空气质量' %} AQI{% else %}°C{% endif %}</span>
     </div>
     {% endif %}
     {% endfor %}
-    </div>
     </div>
 </body>
