@@ -10,7 +10,10 @@ from nonebot import logger, require
 from nonebot.adapters import Event
 
 from ..config import DRIVER, plugin_config
+
+require('nonebot_plugin_htmlrender')
 from ..utils.addition_for_htmlrender import md_to_pic, template_element_to_pic
+
 from ..utils.constant import (
     AIR_QUALITY_BASE_URL,
     ASSETS_DIR,
